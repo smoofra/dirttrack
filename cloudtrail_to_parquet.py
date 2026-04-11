@@ -4,11 +4,13 @@ import argparse
 import gzip
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+from rich.progress import Progress, SpinnerColumn, TextColumn, TaskID
 
 
 def flatten(rec: dict) -> dict:
@@ -39,12 +41,29 @@ def iter_subdirs(root: Path | str) -> Iterator[Path]:
         yield Path(dirpath)
 
 
+@dataclass
+class Stats:
+    files: int = 0
+    records: int = 0
+
+
 class Job:
 
-    def __init__(self, in_dir: Path, out_dir: Path, records_per_file: int):
+    def __init__(
+        self,
+        in_dir: Path,
+        out_dir: Path,
+        records_per_file: int,
+        stats: Stats,
+        progress: Progress,
+        task_id: TaskID,
+    ):
         self.in_dir = in_dir
         self.out_dir = out_dir
         self.records_per_file = records_per_file
+        self.stats = stats
+        self.progress = progress
+        self.task_id = task_id
         self.index: int = 0
         self.records = pa.Table.from_pylist([])
 
@@ -64,8 +83,17 @@ class Job:
                 file.name.endswith(".json") or file.name.endswith(".json.gz")
             ):
                 continue
+            records = read_file(file)
+            self.stats.files += 1
+            self.stats.records += len(records)
+            self.progress.update(
+                self.task_id,
+                description=str(file),
+                files=self.stats.files,
+                records=self.stats.records,
+            )
             self.records = pa.concat_tables(
-                [self.records, pa.Table.from_pylist(read_file(file))],
+                [self.records, pa.Table.from_pylist(records)],
                 promote_options="default",
             )
             if len(self.records) > self.records_per_file:
@@ -79,7 +107,9 @@ def main() -> None:
     )
     parser.add_argument("in_dir", help="Root directory of CloudTrail log files")
     parser.add_argument("out_dir", help="Output directory for Parquet files")
-    parser.add_argument("--overwrite", action="store_true", help="rm OUT_DIR/**/*.parquet")
+    parser.add_argument(
+        "--overwrite", action="store_true", help="rm OUT_DIR/**/*.parquet"
+    )
     parser.add_argument(
         "--records-per-file", "-n", type=int, metavar="N", default=1_000_000
     )
@@ -94,8 +124,25 @@ def main() -> None:
         else:
             raise Exception(f"{out_dir} has .parquet files already")
 
-    for path in iter_subdirs(in_dir):
-        Job(path, out_dir / path.relative_to(in_dir), args.records_per_file).run()
+    stats = Stats()
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn(
+            "[green]{task.fields[files]}[/] files  [cyan]{task.fields[records]:,}[/] records"
+        ),
+        TextColumn("[dim]{task.description}[/]"),
+    ) as progress:
+        task_id = progress.add_task("", files=0, records=0, total=None)
+        for path in iter_subdirs(in_dir):
+            Job(
+                path,
+                out_dir / path.relative_to(in_dir),
+                args.records_per_file,
+                stats,
+                progress,
+                task_id,
+            ).run()
 
 
 if __name__ == "__main__":
