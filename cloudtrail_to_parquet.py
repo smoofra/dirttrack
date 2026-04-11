@@ -3,8 +3,10 @@
 import argparse
 import gzip
 import json
+import multiprocessing
+import multiprocessing.pool
 import os
-from dataclasses import dataclass
+import threading
 from pathlib import Path
 from typing import Iterator
 
@@ -41,12 +43,6 @@ def iter_subdirs(root: Path | str) -> Iterator[Path]:
         yield Path(dirpath)
 
 
-@dataclass
-class Stats:
-    files: int = 0
-    records: int = 0
-
-
 class Job:
 
     def __init__(
@@ -54,16 +50,12 @@ class Job:
         in_dir: Path,
         out_dir: Path,
         records_per_file: int,
-        stats: Stats,
-        progress: Progress,
-        task_id: TaskID,
+        queue,
     ):
         self.in_dir = in_dir
         self.out_dir = out_dir
         self.records_per_file = records_per_file
-        self.stats = stats
-        self.progress = progress
-        self.task_id = task_id
+        self.queue = queue
         self.index: int = 0
         self.records = pa.Table.from_pylist([])
 
@@ -84,14 +76,7 @@ class Job:
             ):
                 continue
             records = read_file(file)
-            self.stats.files += 1
-            self.stats.records += len(records)
-            self.progress.update(
-                self.task_id,
-                description=str(file),
-                files=self.stats.files,
-                records=self.stats.records,
-            )
+            self.queue.put((1, len(records), str(file)))
             self.records = pa.concat_tables(
                 [self.records, pa.Table.from_pylist(records)],
                 promote_options="default",
@@ -99,6 +84,24 @@ class Job:
             if len(self.records) > self.records_per_file:
                 self.flush()
         self.flush()
+
+
+def update_progress(queue: multiprocessing.Queue, progress: Progress, task_id: TaskID):
+    files_total = 0
+    records_total = 0
+    while True:
+        item = queue.get()
+        if item is None:
+            break
+        files_delta, records_delta, current_file = item
+        files_total += files_delta
+        records_total += records_delta
+        progress.update(
+            task_id,
+            files=files_total,
+            records=records_total,
+            description=current_file,
+        )
 
 
 def main() -> None:
@@ -113,6 +116,13 @@ def main() -> None:
     parser.add_argument(
         "--records-per-file", "-n", type=int, metavar="N", default=1_000_000
     )
+    parser.add_argument(
+        "--workers",
+        "-j",
+        type=int,
+        default=os.cpu_count(),
+        help="worker processes (default: cpu count)",
+    )
     args = parser.parse_args()
 
     in_dir = Path(args.in_dir)
@@ -124,25 +134,35 @@ def main() -> None:
         else:
             raise Exception(f"{out_dir} has .parquet files already")
 
-    stats = Stats()
+    with (
+        multiprocessing.Manager() as manager,
+        multiprocessing.pool.Pool(processes=args.workers) as pool,
+        Progress(
+            SpinnerColumn(),
+            TextColumn(
+                "[green]{task.fields[files]}[/] files  [cyan]{task.fields[records]:,}[/] records"
+            ),
+            TextColumn("[dim]{task.description}[/]"),
+        ) as progress,
+    ):
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn(
-            "[green]{task.fields[files]}[/] files  [cyan]{task.fields[records]:,}[/] records"
-        ),
-        TextColumn("[dim]{task.description}[/]"),
-    ) as progress:
+        queue = manager.Queue()
         task_id = progress.add_task("", files=0, records=0, total=None)
-        for path in iter_subdirs(in_dir):
-            Job(
-                path,
-                out_dir / path.relative_to(in_dir),
-                args.records_per_file,
-                stats,
-                progress,
-                task_id,
-            ).run()
+
+        progress_thread = threading.Thread(
+            target=update_progress, daemon=True, args=(queue, progress, task_id)
+        )
+        progress_thread.start()
+
+        jobs = (
+            Job(path, out_dir / path.relative_to(in_dir), args.records_per_file, queue)
+            for path in iter_subdirs(in_dir)
+        )
+        for _ in pool.imap_unordered(Job.run, jobs):
+            pass
+
+        queue.put(None)
+        progress_thread.join()
 
 
 if __name__ == "__main__":
