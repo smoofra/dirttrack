@@ -63,7 +63,7 @@ class Job:
         if len(self.records) == 0:
             return
         os.makedirs(self.out_dir, exist_ok=True)
-        path = self.out_dir / f"{self.index}.parquet"
+        path = self.out_dir / f"{self.index:06d}.parquet"
         self.index += 1
         with pq.ParquetWriter(path, self.records.schema, compression="zstd") as w:
             w.write_table(self.records)
