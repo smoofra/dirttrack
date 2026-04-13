@@ -24,4 +24,5 @@ dev = [
     "pyarrow-stubs",
     "pyspark",
     "pandas",
+    "duckdb>=1.5.2",
 ]
