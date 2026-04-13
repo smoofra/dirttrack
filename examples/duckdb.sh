@@ -7,4 +7,4 @@ fi
 
 parquet_dir=`realpath $1`
 
-duckdb -c "SELECT eventSource,eventName FROM read_parquet('$parquet_dir/**/*.parquet');"
+duckdb -c "SELECT eventSource,eventName,tlsDetails->>'$.tlsVersion' FROM read_parquet('$parquet_dir/**/*.parquet') LIMIT 10;"

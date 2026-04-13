@@ -3,7 +3,7 @@
 import argparse
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col
+from pyspark.sql.functions import col, get_json_object
 
 
 def main():
@@ -21,7 +21,12 @@ def main():
 
     df = spark.read.option("recursiveFileLookup", "true").parquet(args.parquet_dir)
     filtered = df.filter((col("eventSource") == "ec2.amazonaws.com"))
-    filtered.select("eventTime", "eventName").show()
+
+    filtered.select(
+        "eventTime",
+        "eventName",
+        get_json_object("tlsDetails", "$.tlsVersion").alias("tlsVersion"),
+    ).show(10)
 
 
 if __name__ == "__main__":

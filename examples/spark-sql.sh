@@ -16,4 +16,9 @@ END`
 spark-sql \
   --driver-java-options "$java_options" \
   --conf spark.ui.enabled=false \
-  -e "SELECT eventTime,eventName FROM parquet.\`$parquet_dir\`;"
+  -e "
+    CREATE TEMPORARY VIEW events
+    USING parquet
+    OPTIONS (path '$parquet_dir', recursiveFileLookup 'true');
+    SELECT eventTime,eventName FROM events LIMIT 10;
+  "
