@@ -17,6 +17,7 @@ packages = ["src/dirttrack"]
 
 [project.scripts]
 cloudtrail-to-parquet = "dirttrack.cloudtrail_to_parquet:main"
+gitlab-audit-to-parquet = "dirttrack.gitlab_audit_to_parquet:main"
 
 [dependency-groups]
 dev = [
